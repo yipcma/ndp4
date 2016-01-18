@@ -1,0 +1,212 @@
+---
+title: "2016 Presidential Campaign Contributor Data in California"
+author: "Andrew Yip"
+date: "11/4/2015"
+output: html_document
+---
+
+# The questions
+
+This project explores the 2016 Presidential Campaign Contributor Data in California. It aims to understand the characteristics of the contributors in CA and their relationship with the candidates, their political parties, and their finances in general.
+
+Specifically:
+1. How do top-financed candidates in each party position themselves among donors?
+2. How do the parties differ in the temporal and spatial dimensions of fund-raising?
+3. What are the characteristics of donors in correspondance to their financial contribution to a candidate?
+
+# Data cleaning
+
+The data is retrieved from the [Federal Election Commission](http://fec.gov/disclosurep/PDownload.do), where the [File Format](ftp://ftp.fec.gov/FEC/Presidential_Map/2016/DATA_DICTIONARIES/CONTRIBUTOR_FORMAT.txt) is also available, describing all the fields. 
+
+First, load the libraries and read the data, and also read the candidate summary retrieved from the [FEC](http://www.fec.gov/data/CandidateSummary.do). The [metadata](http://www.fec.gov/finance/disclosure/metadata/metadataforcandidatesummary.shtml) is also available.
+
+```{r knitr, include = F}
+library(knitr)
+opts_chunk$set(tidy = T)
+```
+
+```{r libraries, warning = F}
+library(dplyr)
+library(tidyr)
+library(readr)
+library(lubridate)
+library(ggplot2)
+library(rgdal)
+
+# download.file("ftp://ftp.fec.gov/FEC/Presidential_Map/2016/P00000001/P00000001-CA.zip", "data/ca.zip")
+# unzip("data/ca.zip")
+
+ca <- read_csv("data/P00000001-CA.csv")
+
+# Candidate information from http://www.fec.gov/data/CandidateSummary.do
+candidateSummary <- read_csv("data/CandidateSummaryAction.csv")
+```
+
+The data is then corrected for data type; mundane cloumns are removed. cmte_id, cand_id, and cand_nm are redundant, so only the cand_id is kept. We retain the correspondence of these relations in the candidateSummary DF. The date column contb_receipt_dt is converted to POSIXct class for time manipulation. receipt_desc, memo_cd, memo_text, form_tp, tran_id, and election_tp are redacted as they only contain mundane information, the omission of which would not affect the analysis. contbr_st is "CA" for all observations so can also be eliminated. The 18 columns reduce to 9.
+
+```{r dataCleaning}
+ca$contb_receipt_dt <- dmy(ca$contb_receipt_dt)
+ca <- ca %>% select(cand_id, contbr_nm:contbr_city, contbr_zip:contb_receipt_dt, file_num) %>% data.frame
+```
+
+# First look at the candidates
+
+First, note that there are 21 candidates with contributions from CA, let's look at the candidates' key financial summaries, with fractions of individual contributions in total contribtution. It is arranged by descending total contribution. Note that we are exploring the general financial characteristics of the candidates on contributions from all states.
+
+```{r candidateSummaryCA}
+dsConvert <- function(x) gsub('[$,]','',x) %>% as.numeric()
+
+cand <- candidateSummary %>% filter(can_id %in% unique(ca$cand_id)) %>% select(can_id, can_nam, can_par_aff, can_cit, can_sta, can_zip:ind_uni_con, par_com_con:tot_con)
+lapply(7:12, function(x) cand[[x]] <<- cand[[x]] %>% dsConvert())
+cand %>% mutate(ind_ite_fra = signif(ind_ite_con/tot_con, 3), ind_uni_fra = signif(ind_uni_con/tot_con, 3)) %>% select(can_nam, can_par_aff, ind_ite_fra, ind_uni_fra, tot_con) %>%  arrange(tot_con %>% desc) %>% head
+```
+
+# Fund-raising timing and spatial patterns
+
+We now explore the CA contributor data in both time and space.
+
+# Temporal distribution
+
+```{r explore_time_cand}
+candidates <- candidateSummary$can_nam
+names(candidates) <- candidateSummary$can_id
+ca %>% ggplot(aes(x = contb_receipt_dt, y = contb_receipt_amt, color = candidates[cand_id])) + geom_point() + scale_y_log10()
+```
+
+The raw time-series in fund-raising for each candidate is messy. Let's explore party-wide fund-raising by day.
+
+```{r explore_party_summary_day}
+parties <- candidateSummary$can_par_aff
+names(parties) <- candidateSummary$can_id
+par_receipt <- ca %>% mutate(par_aff = parties[cand_id]) %>% group_by(par_aff, contb_receipt_dt) %>% summarize(party_receipt_amt = sum(contb_receipt_amt)) 
+par_receipt %>% group_by(par_aff) %>% summarize(min = min(party_receipt_amt), median = median(party_receipt_amt), mean = mean(party_receipt_amt), max = max(party_receipt_amt), count = n())
+```
+
+The summary shows a performance of the parties in time (day). We notice negative contributions in a large amount with the Republican party. Let's explore the specific entries.
+
+```{r rep_neg}
+par_receipt %>% filter(party_receipt_amt < 0 )
+# ca %>% filter(contb_receipt_amt < 0, contb_receipt_dt == ymd("2015-06-12") )
+```
+
+It is revealed that the negative contributions are generated on June 12, 2015, with file number 1029436 associated with the candidate Marco Rubio. It is also to note that such incidences did not happen with the  other political parties for CA.
+
+```{r par_receipt_time_day}
+par_receipt %>% ggplot(aes(x = contb_receipt_dt, y = party_receipt_amt, color = par_aff)) + geom_point() + scale_y_log10()
+```
+
+Demoncrats' contributions concentrate in late spring early summer in 2015, while Republicans' contributions are spread out more evenly through the year. There's also a contribution at a more concentrated order of magnitude among Demoncrats, while Republican contributions span several orders of magnitude.
+
+# Spatial distribution
+
+```{r par_receipt_space_city}
+ca %>% mutate(par_aff = parties[cand_id])  %>% group_by(par_aff, contbr_city) %>% summarize(sum = sum(contb_receipt_amt)) %>% ggplot(aes(x = contbr_city, y = sum, color = par_aff)) + geom_point() + scale_y_log10()
+
+ca %>% mutate(par_aff = parties[cand_id])  %>% group_by(par_aff, contbr_city) %>% summarize(sum = sum(contb_receipt_amt)) %>% ggplot(aes(x = contbr_city, y = sum, fill = par_aff)) + geom_bar(stat = "identity") + scale_y_log10()
+```
+
+Again, there are a lot of cities and the plot gets messy. To lower the dimension, we perform the analysis via summing the contributions by zip-code, and spatially illustrate the results by political parties.
+
+```{r zip_par_receipt}
+# download country/zipcode shapefiles
+# download.file("http://www2.census.gov/geo/tiger/GENZ2014/shp/cb_2014_us_zcta510_500k.zip", "data/zipcode.zip",quiet = T)
+# unzip("data/zipcode.zip", exdir = "data/")
+# 
+# zipcode <- readOGR("data/", "cb_2014_us_zcta510_500k", stringsAsFactors = F)
+# # substringing the first 5 characters
+# ca_zipcode <- ca$contbr_zip  %>% substr(., 1, 5) %>% unique
+# zipcode <- zipcode[zipcode$ZCTA5CE10 %in% ca_zipcode, ]
+# save(zipcode, file = "data/zipcode.RData")
+load("data/zipcode.RData")
+# NOTE: the above code operates on a file larger than github allows. a subsetted version is saved after processing for preliminary visualization below
+
+plot(zipcode['ZCTA5CE10'])
+```
+
+A quick look of the spatial plot of the zipcode shows us something strange about the data, namely, some remote areas not in CA are plotted. It is relvealed that zipcode of 11205 and 32804 are included in the data. In addition, zipcodes are really too fine a spatial scale for visualization (at 1348 polygons).
+
+# Financing characteristics
+
+First, we need to clean the data for duplicate categories such as "SELF-EMPLOYED", "SELF EMPLOYED", "SELF", "NONE", "NOT EMPLOYED", etc in the employer column. For this study, we will group them using the occupation column under "NOT EMPLOYED" and "SELF EMPLOYED". Before doing so, let's side-track and investigate whether there's a self-perceived difference within the "NOT EMPLOYED" and "SELF EMPLOYED" groups in reported employer and their compaign contribution amount.
+
+```{r employerCleaning}
+ca %>% filter(contbr_occupation == "NOT EMPLOYED") %>% group_by(contbr_employer) %>% summarize(n = n(), mean = mean(contb_receipt_amt)) %>% arrange(n %>% desc)
+
+ca %>% filter(contbr_occupation == "SELF EMPLOYED") %>% group_by(contbr_employer) %>% summarize(n = n(), mean = mean(contb_receipt_amt)) %>% arrange(n %>% desc)
+
+ca$contbr_employer[ca$contbr_occupation == "NOT EMPLOYED"] <- "NOT EMPLOYED"
+ca$contbr_employer[ca$contbr_occupation == "SELF EMPLOYED"] <- "SELF EMPLOYED"
+```
+
+From the lists ranked by head-count, there's no discernable differences among the different reported employers within in terms of average contributions.
+
+We now examine the top occupation and companies by head count and look at their average contribution per head.
+
+```{r finchar_occupation}
+ca %>% mutate(par_aff = parties[cand_id]) %>% group_by(par_aff, contbr_occupation) %>% summarize(n = n(), mean = mean(contb_receipt_amt)) %>% arrange(n %>% desc) %>% slice(1:5)
+```
+
+Democrats top supporters are the not employed, retired, and attorney. In contrast, Republicans see retirees the top contributors, following with the homemaker and attorney. Democrats average contributions on the attorneys and retired crowds are both higher than those of Republicans. Homemaker makes a personal surprise in both numbers and the average amount of contribution. In the following we compile the top occupations for both parties ranked by accumulated head counts and examine their respective average contributions.
+
+```{r chart_occupation}
+occupation <- left_join(ca %>% mutate(par_aff = parties[cand_id]) %>% group_by(par_aff, contbr_occupation) %>% summarize(n = n(), mean = mean(contb_receipt_amt)) %>% select(par_aff, contbr_occupation, n) %>% spread(par_aff, n) %>% select(-UNK) %>% filter(complete.cases(.)) %>% mutate(total = DEM + REP) %>% arrange(total %>% desc), ca %>% mutate(par_aff = parties[cand_id]) %>% group_by(par_aff, contbr_occupation) %>% summarize(n = n(), mean = mean(contb_receipt_amt)) %>% select(par_aff, contbr_occupation, mean) %>% spread(par_aff, mean) %>% select(-UNK) %>% filter(complete.cases(.)), by = "contbr_occupation") %>% rename(DEM.n = DEM.x, REP.n = REP.x, DEM.mean = DEM.y, REP.mean = REP.y) %>% mutate(gap = DEM.mean - REP.mean)
+
+occupation %>% slice(1:15)
+```
+
+From the top 15 occupations in accumulated headcounts for both parties, average amount is higher in almost all but for software engineer, where a much smaller head counts exist for the Republicans with higher average contribution.
+
+Next we look at top employers.
+
+
+```{r chart_employer}
+employer <- left_join(ca %>% mutate(par_aff = parties[cand_id]) %>% group_by(par_aff, contbr_employer) %>% summarize(n = n(), mean = mean(contb_receipt_amt)) %>% select(par_aff, contbr_employer, n) %>% spread(par_aff, n) %>% select(-UNK) %>% filter(complete.cases(.)) %>% mutate(total = DEM + REP) %>% arrange(total %>% desc), ca %>% mutate(par_aff = parties[cand_id]) %>% group_by(par_aff, contbr_employer) %>% summarize(n = n(), mean = mean(contb_receipt_amt)) %>% select(par_aff, contbr_employer, mean) %>% spread(par_aff, mean) %>% select(-UNK) %>% filter(complete.cases(.)), by = "contbr_employer") %>% rename(DEM.n = DEM.x, REP.n = REP.x, DEM.mean = DEM.y, REP.mean = REP.y) %>% mutate(gap = DEM.mean - REP.mean)
+
+employer %>% slice(1:20)
+```
+
+A quick inspection of the list shows that the universities and tech companies are democrat heavy, as well as the government employee of the California State and the LA County.
+
+
+# Final Plots and Summary
+
+## Plot 1: Candidate Positioning in Fund-raising
+
+In relation to the first question, let's look at the relations of the size of total contribution, the weight of unitemized contributions (under $200), and the party affiliation.
+
+```{r hotelling}
+cand %>% mutate(ind_ite_fra = signif(ind_ite_con/tot_con, 3), ind_uni_fra = signif(ind_uni_con/tot_con, 3)) %>% select(can_nam, can_par_aff, ind_ite_fra, ind_uni_fra, tot_con) %>% ggplot(aes(x = tot_con, y = ind_uni_fra, color = can_par_aff, label = sapply(strsplit(can_nam, split = ",", fixed = T), function(x) x[1]))) + geom_text() + theme_bw() + labs(x = "Total Contribution (USD)", y = "Fraction of contribution under $200", color = "Party", title = "Positioning of candidates in fund-raising")
+```
+
+Out of the four democratic candidates who received contributions from CA, Clinton and Sanders lead in total contributions, with very different constituents of the funding source. 80% of Sanders' individual contributions are small contributions under $200 each, where Clinton stands at 20%. Also note that Clinton receives double the amount of contributions to that of Sanders. Among Republican candidates, Carson receives most contribution in aggregate, while the top three Republican candidates in terms of total contributions do not see such a big variance as among the Democrats. It is also interesting to note that the top three Republican candidates span the space among the different proportions of small contributions, with Carson catering to the small donars, and Bush to the large, and Cruz holding a middle position. Personally, it is surprising to see Trump has a rather low percentage in contributions greater than $200, while his total contribution is not as high, contrary to his media image. It also seems that the [Hotelling's law](https://en.wikipedia.org/wiki/Hotelling%27s_law) does not hold in terms of political positioning on total contributions within one's political party, where differentiation in the size of individual contributions pays off.
+
+## Plot 2: Temporal aggregation in contribution
+
+In relation to the second question we explore the temporal behavior in campaign contribution for the 9 largest occupations for each party respectively from May 2015.
+
+```{r occupationintime}
+ca %>% mutate(t = ymd(contb_receipt_dt), party = parties[cand_id]) %>% filter(contbr_occupation %in% occupation$contbr_occupation[1:9], party %in% c("DEM", "REP"), t > "2015-05-01") %>% group_by(party, contbr_occupation, t) %>% summarize(sum = sum(contb_receipt_amt)) %>% mutate(cumsum = with_order(t, cumsum, sum)) %>% ggplot(aes(x = t, y = cumsum, color = contbr_occupation)) + geom_line() + facet_grid(party ~ .) + scale_color_brewer(palette = "Set3") + theme_bw() + labs(x = "Time", y = "USD", color = "Occupation", title = "Commulative contribution by occupation")
+```
+
+Here we observe an obvious kink in the republican total contribution at the end of June, and a steady increase in total contribution from the two most important sectors, retired and homemakers. On the contrast, demoncratic total contribution sees a more linear trend from the top performing sectors, the attorneys and the retired. The not employed is a particular strong hold with the Democrats, with an increasing trend over time.
+
+## Plot 3: A simple model on party affiliation and contribution amount
+
+To investigate the third question of how the characteristics of the donor relate to their support of a particular party. We opt to build a linear model to predict party affiliation based on the donor's contribution amount and other traits. Since the dimensions of the factor variables are large, we opt to only take the top 15 occupations combined across parties as a predictor.
+
+```{r simplemodel}
+partyint <- c(0, 1)
+names(partyint) <- c("DEM", "REP")
+modeldata <- ca %>% mutate(par_aff = partyint[parties[cand_id]]) %>% filter(par_aff %in% c(0,1), contbr_occupation %in% occupation$contbr_occupation[1:15]) %>% select(contb_receipt_amt, par_aff, contbr_occupation) 
+model <- lm(par_aff ~ contb_receipt_amt + contbr_occupation, modeldata)
+
+model
+anova(model)
+```
+
+The model illustrates significance in predicting party support based on donor's occupation and contribution, where the occupations have most weight in terms of predicting one's affiliation. The signs of effect of the professions agree with the prior explorations.
+
+# Reflection
+
+The categorical columns have been messy and difficult to clean due to the inherent duplicative nature of self-reported fields. In particular, the self-employed and not-employed categories overlap without clear delineation. The lack of finer spatial grouping of the donors other than zipcode has made a spatial investigation of the data difficult. This data-analysis exerperience has been both challenging and rewarding. I look forward to more predictive analyses on election data with more scalar variables, which could include household income, family size, home size, etc, for a better characterization of the donors behavior with their traits.
+
